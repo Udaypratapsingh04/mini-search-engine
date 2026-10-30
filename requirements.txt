@@ -1,0 +1,5 @@
+nltk
+fastapi
+uvicorn
+pytest
+scikit-learn
