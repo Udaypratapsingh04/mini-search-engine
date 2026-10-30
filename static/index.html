@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mini Search Engine</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #62676e; --card: #f6f7f9;
+    --border: #d9dce1; --accent: #2563eb; --mark: #fde68a; --hover: #e9eef9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --fg: #e8e8e8; --muted: #9aa0a6; --card: #1d2026;
+      --border: #343842; --accent: #6ea8fe; --mark: #6b5d12; --hover: #2a3140;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; line-height: 1.5;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: .95rem; }
+  .searchbar { position: relative; display: flex; gap: 8px; }
+  input[type=search] {
+    flex: 1; padding: 12px 14px; font-size: 1rem; border-radius: 10px;
+    border: 1px solid var(--border); background: var(--card); color: var(--fg);
+  }
+  input[type=search]:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  button {
+    padding: 0 20px; font-size: 1rem; border: 0; border-radius: 10px; cursor: pointer;
+    background: var(--accent); color: #fff;
+  }
+  #suggestions {
+    position: absolute; top: 100%; left: 0; right: 96px; margin: 4px 0 0; padding: 4px 0;
+    list-style: none; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 10px; z-index: 5; display: none; box-shadow: 0 6px 20px rgba(0,0,0,.15);
+  }
+  #suggestions li { padding: 8px 14px; cursor: pointer; }
+  #suggestions li.active, #suggestions li:hover { background: var(--hover); }
+  #dym { margin: 14px 0 0; }
+  #dym a { color: var(--accent); cursor: pointer; font-weight: 600; }
+  #meta { margin: 14px 0 6px; color: var(--muted); font-size: .9rem; min-height: 1.3em; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+          padding: 12px 16px; margin: 10px 0; }
+  .card h3 { margin: 0 0 4px; font-size: 1.05rem; }
+  .card p { margin: 0 0 6px; color: var(--fg); overflow-wrap: anywhere; }
+  .card small { color: var(--muted); }
+  mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1px; }
+  .hint { color: var(--muted); font-size: .85rem; margin-top: 18px; }
+  code { background: var(--card); padding: 1px 5px; border-radius: 4px; }
+  footer { margin-top: 36px; color: var(--muted); font-size: .85rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Mini Search Engine</h1>
+  <p class="sub">BM25 ranking, boolean and phrase queries, autocomplete and typo correction, built from scratch.</p>
+
+  <form id="form" class="searchbar" autocomplete="off">
+    <input id="q" type="search" placeholder="Try: space shuttle" aria-label="Search query" maxlength="200" autofocus>
+    <button type="submit">Search</button>
+    <ul id="suggestions" role="listbox"></ul>
+  </form>
+
+  <div id="dym"></div>
+  <div id="meta"></div>
+  <div id="results"></div>
+
+  <p class="hint">
+    Examples: <code>graphics card</code> &middot; <code>python AND NOT snake</code> &middot;
+    <code>"machine learning"</code> &middot; a typo like <code>graphcis</code>
+  </p>
+  <footer id="footer"></footer>
+</main>
+
+<script>
+(function () {
+  const input = document.getElementById("q");
+  const form = document.getElementById("form");
+  const list = document.getElementById("suggestions");
+  const meta = document.getElementById("meta");
+  const dym = document.getElementById("dym");
+  const results = document.getElementById("results");
+  const footer = document.getElementById("footer");
+
+  let debounceTimer = null;
+  let suggestSeq = 0;
+  let searchSeq = 0;
+  let active = -1;
+  let current = [];
+
+  // ---------- helpers ----------
+  function lastWord() {
+    const m = input.value.match(/(\S*)$/);
+    return m ? m[1].replace(/^"+/, "") : "";
+  }
+
+  function queryTerms(q) {
+    const out = [];
+    const toks = q.replace(/"/g, " ").split(/\s+/).filter(Boolean);
+    for (let i = 0; i < toks.length; i++) {
+      const t = toks[i];
+      if (t === "NOT") { i++; continue; }              // do not highlight excluded words
+      if (t === "AND" || t === "OR") continue;
+      if (/^[a-z0-9]{2,}$/i.test(t)) out.push(t.toLowerCase());
+    }
+    return [...new Set(out)];
+  }
+
+  // Safe highlighting: builds DOM nodes, never injects HTML.
+  function highlight(text, terms) {
+    const frag = document.createDocumentFragment();
+    if (!terms.length) { frag.appendChild(document.createTextNode(text)); return frag; }
+    const re = new RegExp("\\b(?:" + terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")\\w*", "gi");
+    let last = 0, m;
+    while ((m = re.exec(text)) !== null) {
+      if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+      const mark = document.createElement("mark");
+      mark.textContent = m[0];
+      frag.appendChild(mark);
+      last = m.index + m[0].length;
+      if (m[0].length === 0) re.lastIndex++;
+    }
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    return frag;
+  }
+
+  // ---------- autocomplete (200 ms debounce) ----------
+  function hideSuggestions() {
+    list.style.display = "none";
+    list.innerHTML = "";
+    active = -1;
+    current = [];
+  }
+
+  function showSuggestions(words) {
+    hideSuggestions();
+    if (!words.length) return;
+    current = words;
+    words.forEach((w, i) => {
+      const li = document.createElement("li");
+      li.textContent = w;
+      li.setAttribute("role", "option");
+      li.addEventListener("mousedown", (e) => { e.preventDefault(); applySuggestion(w); });
+      list.appendChild(li);
+    });
+    list.style.display = "block";
+  }
+
+  function setActive(i) {
+    const items = list.children;
+    for (let j = 0; j < items.length; j++) items[j].classList.toggle("active", j === i);
+    active = i;
+  }
+
+  function applySuggestion(word) {
+    input.value = input.value.replace(/(\S*)$/, (m) => (m.startsWith('"') ? '"' : "") + word);
+    hideSuggestions();
+    runSearch(input.value);
+  }
+
+  async function loadSuggestions() {
+    const prefix = lastWord().toLowerCase();
+    const seq = ++suggestSeq;
+    if (prefix.length < 2 || !/^[a-z]+$/.test(prefix)) { hideSuggestions(); return; }
+    try {
+      const r = await fetch("/suggest?prefix=" + encodeURIComponent(prefix) + "&limit=5");
+      if (!r.ok || seq !== suggestSeq) return;          // ignore stale responses
+      const data = await r.json();
+      showSuggestions(data.suggestions);
+    } catch (e) { hideSuggestions(); }
+  }
+
+  input.addEventListener("input", () => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(loadSuggestions, 200);
+  });
+
+  input.addEventListener("keydown", (e) => {
+    if (list.style.display !== "block") return;
+    if (e.key === "ArrowDown") { e.preventDefault(); setActive((active + 1) % current.length); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setActive((active - 1 + current.length) % current.length); }
+    else if (e.key === "Enter" && active >= 0) { e.preventDefault(); applySuggestion(current[active]); }
+    else if (e.key === "Escape") { hideSuggestions(); }
+  });
+
+  input.addEventListener("blur", () => setTimeout(hideSuggestions, 100));
+
+  // ---------- search ----------
+  function render(data) {
+    results.innerHTML = "";
+    dym.innerHTML = "";
+    const terms = queryTerms(data.query);
+
+    if (data.did_you_mean) {
+      dym.appendChild(document.createTextNode("Did you mean: "));
+      const a = document.createElement("a");
+      a.textContent = data.did_you_mean;
+      a.addEventListener("click", () => { input.value = data.did_you_mean; runSearch(data.did_you_mean); });
+      dym.appendChild(a);
+      dym.appendChild(document.createTextNode("?"));
+    }
+
+    meta.textContent = data.count + (data.count === 1 ? " result" : " results") +
+      " in " + data.took_ms.toFixed(1) + " ms";
+
+    data.results.forEach((r) => {
+      const card = document.createElement("div");
+      card.className = "card";
+      const h = document.createElement("h3");
+      h.appendChild(highlight(r.title, terms));
+      const p = document.createElement("p");
+      p.appendChild(highlight(r.snippet, terms));
+      const s = document.createElement("small");
+      s.textContent = "doc #" + r.doc_id + " \u00b7 score " + r.score.toFixed(3);
+      card.append(h, p, s);
+      results.appendChild(card);
+    });
+  }
+
+  async function runSearch(q) {
+    q = q.trim();
+    if (!q) return;
+    hideSuggestions();
+    const seq = ++searchSeq;
+    meta.textContent = "Searching\u2026";
+    const slow = setTimeout(() => {
+      if (seq === searchSeq)
+        meta.textContent = "Still working\u2026 the free server may be waking up (this can take up to a minute).";
+    }, 4000);
+    try {
+      const r = await fetch("/search?q=" + encodeURIComponent(q) + "&k=10");
+      if (seq !== searchSeq) return;
+      if (r.status === 503) { meta.textContent = "The index is still loading. Try again in a few seconds."; return; }
+      if (r.status === 422) { meta.textContent = "Please enter a query of 1 to 200 characters."; return; }
+      if (!r.ok) { meta.textContent = "Something went wrong (HTTP " + r.status + ")."; return; }
+      render(await r.json());
+      history.replaceState(null, "", "?q=" + encodeURIComponent(q));
+    } catch (e) {
+      if (seq === searchSeq) meta.textContent = "Could not reach the server.";
+    } finally {
+      clearTimeout(slow);
+    }
+  }
+
+  form.addEventListener("submit", (e) => { e.preventDefault(); runSearch(input.value); });
+
+  // ---------- startup ----------
+  fetch("/health").then(r => r.ok ? r.json() : null).then(h => {
+    if (h) footer.textContent = "Searching " + h.docs.toLocaleString() + " documents.";
+  }).catch(() => {});
+
+  const initial = new URLSearchParams(location.search).get("q");
+  if (initial) { input.value = initial; runSearch(initial); }
+})();
+</script>
+</body>
+</html>

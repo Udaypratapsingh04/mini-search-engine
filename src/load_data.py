@@ -1,5 +1,4 @@
 import re
-from sklearn.datasets import fetch_20newsgroups
 
 
 def _split_header(raw: str):
@@ -12,6 +11,9 @@ def _split_header(raw: str):
 
 def load_documents():
     """Return a list of {id, title, text} dicts."""
+    # Imported here so the deployed web app does not need scikit-learn.
+    from sklearn.datasets import fetch_20newsgroups
+
     data = fetch_20newsgroups(
         subset="all",
         remove=("footers", "quotes"),

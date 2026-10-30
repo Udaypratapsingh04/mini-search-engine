@@ -1,0 +1,14 @@
+[run]
+source =
+    src
+    app
+omit =
+    src/cli.py
+    src/build_index.py
+    src/time_preprocess.py
+    src/load_data.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
