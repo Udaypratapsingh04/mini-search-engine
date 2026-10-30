@@ -1,6 +1,9 @@
 venv/
 data/
 *.pkl
+!deploy_data/*.pkl
+nltk_data/
 __pycache__/
 .pytest_cache/
 .coverage
+htmlcov/
